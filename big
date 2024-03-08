@@ -1,0 +1,85 @@
+package com.sgcc.aomprehensive.job
+
+
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.expressions.Window
+import org.apache.spark.sql.functions._
+
+object big {
+  def main(args: Array[String]): Unit = {
+
+    val spark = SparkSession.builder().master("local[*]").appName("YearCount").getOrCreate()
+
+    // 创建示例数据集
+    val data = Seq(
+      ("ABC17969(AB)", "1", "ABC17969", 2022),
+      ("ABC17969(AB)", "2", "CDC52533", 2022),
+      ("ABC17969(AB)", "3", "DEC59161", 2023),
+      ("ABC17969(AB)", "4", "F43874", 2022),
+      ("ABC17969(AB)", "5", "MY06154", 2021),
+      ("ABC17969(AB)", "6", "MY4387", 2022),
+      ("AE686(AE)", "7", "AE686", 2023),
+      ("AE686(AE)", "8", "BH2740", 2021),
+      ("AE686(AE)", "9", "EG999", 2021),
+      ("AE686(AE)", "10", "AE0908", 2021),
+      ("AE686(AE)", "11", "QA402", 2022),
+      ("AE686(AE)", "12", "OM691", 2022)
+    )
+
+    val data1 = Seq(
+      ("AE686(AE)", "7", "AE686", 2022),
+    ("AE686(AE)", "8", "BH2740", 2021),
+    ("AE686(AE)", "9", "EG999", 2021),
+    ("AE686(AE)", "10", "AE0908", 2023),
+    ("AE686(AE)", "11", "QA402", 2022),
+    ("AE686(AE)", "12", "OA691", 2022),
+    ("AE686(AE)", "12", "OB691", 2022),
+    ("AE686(AE)", "12", "OC691", 2019),
+    ("AE686(AE)", "12", "OD691", 2017)
+    )
+
+    import spark.implicits._
+    val df = data1.toDF("peer_id", "id_1", "id_2", "year")
+
+    // 1.获取每个 peer_id 中包含 id_2 的年份
+    val peer_year = df.filter($"peer_id".contains($"id_2"))
+      .groupBy("peer_id")
+      .agg(collect_list("year").as("years_with_id2"))
+    peer_year.show()
+
+    //2.给定一个大小数，例如 3。对于每个 peer_id 计算每个年份的数量（小于等于步骤1中的年份）。
+    // 定义给定的大小数
+    val threshold = 7
+    //对于每个 peer_id 计算每个年份的数量（小于等于步骤1中的年份）。
+    val yearDF = peer_year.withColumn("years_id2", explode($"years_with_id2"))
+      .drop($"years_with_id2")
+
+    val countByYear = df.groupBy("peer_id", "year")
+      .agg(count("*").as("count"))
+      .orderBy("peer_id", "year")
+
+    //小于等于年份的计数
+    val filterCount = countByYear.join(yearDF, Seq("peer_id"))
+      .filter($"year" <= $"years_id2")
+      .select("peer_id", "year", "count")
+      .orderBy(col("peer_id"), col("year").desc)
+    filterCount
+      .show()
+
+    //按年份对步骤 2 中的值进行排序，并检查第一年的计数是否大于或等于给定的大小数。如果是，则返回该年份。
+    //如果不是，则从最大年份开始，逐年添加计数，直到计数大于或等于给定的数。例如，对于 "AE686(AE)"，年份是 2023，计数如下：
+    val spec = Window.partitionBy("peer_id").orderBy(col("year").desc)
+
+    // 计算累积和
+    val cumSumDf = filterCount.withColumn("CumulativeSum", sum("count").over(spec))
+
+    // 过滤出参与累积和大于等于3的行，并选择年份列
+    val resultDf = cumSumDf
+      .withColumn("lagCumSum", lag("CumulativeSum", 1, 0).over(spec)) // 获取前一行的累积和
+      .filter($"CumulativeSum" >= threshold && $"lagCumSum" < threshold || $"lagCumSum" < threshold) // 确保当前行是首次达到或超过阈值的行
+      .select("peer_id", "Year")
+
+    resultDf.show()
+
+  }
+}
